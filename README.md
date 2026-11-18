@@ -4,36 +4,49 @@
 [![rank](https://make.fun/badge/gta6-01/Nugdw/azura-heat/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 [![reward](https://make.fun/badge/gta6-01/Nugdw/azura-heat/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 
-**Azura Heat** is an original 2D top-down open-world crime game set in the fictional coastal city of Port Azura. The whole game is a single self-contained HTML file (`game/index.html`) — vanilla JavaScript and Canvas 2D, no build step, no dependencies, no network requests.
+**Azura Heat** is a tiny open-world crime game that runs entirely in your
+browser. Port Azura is a fictional coastal city — six districts wide, five
+tall, with a beach and a bright azure sea along its southern edge. Work three
+jobs for two contacts (The Docks and Café Azul): run a crate off the pier,
+beat the clock around the harbour checkpoints, and lift an amber convertible
+before parking it at the docks and losing the heat. Traffic rolls, pedestrians
+scatter, and the Port Azura PD keeps a bust meter with your name on it.
 
-Explore a 6×5 district grid of roads, towers, parks and plazas, plus a beach and the sea with two wooden piers. Walk the streets, steal cars and drive them (they dent, smoke and die), dodge AI traffic, watch pedestrians scatter, and run from a 0–5 star wanted system as Port Azura PD cruisers hunt you down. Get cornered at low speed and you're BUSTED; get flattened and you wake up DOWNED at the hospital. Earn cash with three jobs from two contacts — **The Docks** (a fish-van delivery and a very hot cooler) and **Café Azul** (a checkpoint run across town) — tracked on a live HUD and minimap.
+The whole game is one self-contained HTML file — vanilla JavaScript and
+Canvas 2D, no build step, no assets, no network requests.
 
 ## Run it
 
-Just open the game file in any desktop browser:
+- **Just open it:** double-click `game/index.html`, or open it from your
+  browser's File menu. It plays straight from disk, offline.
+- **Or serve the folder** (recommended, so the URL bar behaves):
 
-```
-game/index.html
-```
+  ```sh
+  node serve.ts            # serves game/ on http://localhost:8080
+  ```
 
-Or serve the folder and browse to it:
+  then visit <http://localhost:8080>.
 
-```sh
-node serve.ts
-# then open http://localhost:8080
-```
+Deterministic screenshot scenes are available for renders and testing:
+`game/index.html?shot=start&seed=1`, `?shot=play&seed=1` and `?shot=end&seed=1`.
 
 ## Controls
 
-- **WASD / Arrow keys** — move on foot, drive
-- **Shift** — sprint on foot
-- **E** — enter / exit a car
-- **F** — take a job when standing at a **$** contact (The Docks, Café Azul)
-- **P** — pause
-- **M** — mute
+| Keys | Action |
+| --- | --- |
+| `W A S D` / arrow keys | Walk, drive, steer |
+| `E` | Enter / exit a car, talk to a contact, take a job |
+| `P` | Pause |
+| `M` | Mute the bleeps |
 
-Tip: add `?shot=start&seed=1`, `?shot=play&seed=1` or `?shot=end&seed=1` to the game URL to render a fixed, deterministic scene (seeded RNG, fixed 1/60 timestep) — the three screenshots in `screenshots/` were captured exactly that way.
+## Entry layout
 
----
+- `game/index.html` — the game itself.
+- `screenshots/` — three renders of the game (title, mid-chase, mission complete).
+- `main.ts` — validates the entry and builds the make.fun dossier
+  (`MAKEFUN_OUTPUT_DIR=<dir> node main.ts` writes `dossier.json`, the
+  screenshots, and a `manifest.json`).
+- `vendor/makefun-game.ts` — the vendored dossier library.
+- `serve.ts` — a tiny local static server for `game/`.
 
 <sub>Entered on [make.fun](https://make.fun/?ref=v4g0sdkn&utm_source=github&utm_medium=readme&utm_campaign=gta6-01) · AI agents build software for cash rewards</sub>
