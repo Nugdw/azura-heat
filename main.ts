@@ -1,156 +1,149 @@
-// Azura Heat — dossier generator for the make.fun gta6-01 entry.
+// Azura Heat — dossier generator.
 //
 // Running `MAKEFUN_OUTPUT_DIR=<dir> node main.ts` from the repository root
-// validates the entry (game page, shots list, screenshot files), builds the
-// official dossier with the vendored make.fun library, copies the three
-// screenshots named in shots.json into the output directory, and writes a
-// small manifest.json describing everything it produced.
+// assembles the make.fun hand-in for the game in game/:
 //
-// Node 22+ standard library only; erasable TypeScript; no build step.
+//   <dir>/dossier.json    the canonical makefun/dossier/v1 document, built
+//                         by the vendored library from game/ + screenshots/
+//   <dir>/1-start.jpg     the three renders named by shots.json, copied
+//   <dir>/2-play.jpg      verbatim from screenshots/
+//   <dir>/3-end.jpg
+//   <dir>/manifest.json   this generator's own index of what it wrote
+//                         (names, byte counts, sha256) — a convenience for
+//                         anyone checking the hand-in by hand.
+//
+// The dossier itself is produced by vendor/makefun-game.ts, the same code
+// the bounty scores with, so what is written here is byte-identical to
+// what the scorer computes from the same tree.
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join, resolve } from 'node:path';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildDossier, DOSSIER_SCHEMA } from './vendor/makefun-game.ts';
+import { buildDossier, INDEX_HTML_MAX_BYTES } from './vendor/makefun-game.ts';
 
-// ------------------------------------------------------------------ config
+// ---------------------------------------------------------------- config
 const GAME = {
   title: 'Azura Heat',
   city: 'Port Azura',
-  version: '1.0.0',
-  entrypoint: 'game/index.html',
+  entry: 'game/index.html',
+  shotsFile: 'shots.json',
+  shotsDir: 'screenshots',
 } as const;
 
-/** The gate's caps, as documented by the vendored library. */
-const CAPS = {
+// The caps the dossier is built under: the whole game source fits in the
+// text budget, screenshots are capped at the hand-in limit of 256 KiB.
+const DOSSIER_CAPS = {
   text_max_bytes: 163840,
   screenshots: { max: 4, max_bytes: 262144 },
   game_max_files: 993,
   game_max_bytes: 50331648,
 } as const;
 
-const INDEX_HTML_MAX_BYTES = 1024 * 1024;
-const SHOT_NAME = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
-const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-const JPEG_MAGIC = [0xff, 0xd8, 0xff];
-
-// ------------------------------------------------------------------ logging
+// ---------------------------------------------------------------- logging
 function log(stage: string, message: string): void {
-  console.log(`[azura-heat] stage=${stage} status=ok ${message}`);
+  console.log(`[azura-heat] ${stage} — ${message}`);
 }
 function fail(stage: string, message: string): never {
-  console.error(`[azura-heat] stage=${stage} status=error ${message}`);
+  console.error(`[azura-heat] ${stage} — ERROR: ${message}`);
   process.exit(1);
 }
 
-// ------------------------------------------------------------------ helpers
-const sha256Hex = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
-
-function opensWith(bytes: Uint8Array, magic: readonly number[]): boolean {
-  return bytes.length >= magic.length && magic.every((b, i) => bytes[i] === b);
+function sha256(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex');
 }
 
+// ---------------------------------------------------------------- inputs
 interface ShotSpec { name: string; query: string }
 
 function readShots(entryDir: string): ShotSpec[] {
-  const path = join(entryDir, 'shots.json');
-  if (!existsSync(path)) fail('validate', 'shots.json is missing from the repository root');
+  const path = join(entryDir, GAME.shotsFile);
+  if (!existsSync(path)) fail('validate', `${GAME.shotsFile} is missing — it names the renders to hand in`);
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(path, 'utf8'));
   } catch (err) {
-    fail('validate', `shots.json is not valid JSON (${(err as Error).message})`);
+    fail('validate', `${GAME.shotsFile} is not valid JSON: ${(err as Error).message}`);
   }
-  if (!Array.isArray(parsed) || parsed.length < 3 || parsed.length > CAPS.screenshots.max) {
-    fail('validate', `shots.json must list 3 or 4 screenshots, found ${Array.isArray(parsed) ? parsed.length : 'a non-array'}`);
+  if (!Array.isArray(parsed) || parsed.length < 3 || parsed.length > 4) {
+    fail('validate', `${GAME.shotsFile} must list 3 or 4 shots, found ${Array.isArray(parsed) ? parsed.length : 'a non-array'}`);
   }
-  const seen = new Set<string>();
   const shots: ShotSpec[] = [];
-  for (const item of parsed as Array<Record<string, unknown>>) {
-    const name = item?.name, query = item?.query;
-    if (typeof name !== 'string' || !SHOT_NAME.test(name) || !(name.endsWith('.jpg') || name.endsWith('.jpeg') || name.endsWith('.png'))) {
-      fail('validate', `shots.json holds a bad screenshot name: ${JSON.stringify(name)}`);
+  for (const raw of parsed as Array<Record<string, unknown>>) {
+    const name = raw?.name, query = raw?.query;
+    if (typeof name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) || !/\.(jpg|jpeg|png)$/i.test(name)) {
+      fail('validate', `shots.json: bad screenshot name ${JSON.stringify(name)}`);
     }
     if (typeof query !== 'string' || !query.startsWith('?')) {
-      fail('validate', `shots.json entry ${name} has a bad query: ${JSON.stringify(query)}`);
+      fail('validate', `shots.json: shot ${name} needs a query starting with '?', found ${JSON.stringify(query)}`);
     }
-    if (seen.has(name)) fail('validate', `shots.json lists ${name} twice`);
-    seen.add(name);
     shots.push({ name, query });
   }
   return shots;
 }
 
-function validateEntry(entryDir: string, shots: ShotSpec[]): void {
-  const gameDir = join(entryDir, 'game');
-  if (!existsSync(gameDir) || !statSync(gameDir).isDirectory()) fail('validate', 'game/ directory is missing');
-  const indexPath = join(gameDir, 'index.html');
-  if (!existsSync(indexPath)) fail('validate', 'game/index.html is missing');
+function checkInputs(entryDir: string, shots: ShotSpec[]): void {
+  const indexPath = join(entryDir, GAME.entry);
+  if (!existsSync(indexPath)) fail('validate', `${GAME.entry} is missing — there is no game to hand in`);
   const indexBytes = statSync(indexPath).size;
-  if (indexBytes === 0 || indexBytes > INDEX_HTML_MAX_BYTES) {
-    fail('validate', `game/index.html is ${indexBytes} bytes; the cap is ${INDEX_HTML_MAX_BYTES}`);
+  if (indexBytes > INDEX_HTML_MAX_BYTES) {
+    fail('validate', `${GAME.entry} is ${indexBytes} bytes, over the ${INDEX_HTML_MAX_BYTES}-byte limit for a single-file game`);
   }
-  const head = readFileSync(indexPath, 'utf8').slice(0, 512).toLowerCase();
-  if (!head.includes('<!doctype html') || !head.includes('<canvas')) {
-    fail('validate', 'game/index.html does not look like the Azura Heat canvas page');
-  }
-  log('validate', `game/index.html ${indexBytes} bytes, within the 1 MiB cap`);
+  log('validate', `${GAME.entry} present (${indexBytes} bytes, limit ${INDEX_HTML_MAX_BYTES})`);
   for (const shot of shots) {
-    const p = join(entryDir, 'screenshots', shot.name);
-    if (!existsSync(p)) fail('validate', `screenshots/${shot.name} is missing (render it in ?shot mode first)`);
-    const bytes = new Uint8Array(readFileSync(p));
-    if (bytes.length > CAPS.screenshots.max_bytes) {
-      fail('validate', `screenshots/${shot.name} is ${bytes.length} bytes; the cap is ${CAPS.screenshots.max_bytes}`);
+    const p = join(entryDir, GAME.shotsDir, shot.name);
+    if (!existsSync(p)) fail('validate', `${GAME.shotsDir}/${shot.name} is missing — capture it before generating the dossier`);
+    const size = statSync(p).size;
+    if (size > DOSSIER_CAPS.screenshots.max_bytes) {
+      fail('validate', `${GAME.shotsDir}/${shot.name} is ${size} bytes, over the ${DOSSIER_CAPS.screenshots.max_bytes}-byte screenshot cap`);
     }
-    if (!opensWith(bytes, PNG_MAGIC) && !opensWith(bytes, JPEG_MAGIC)) {
-      fail('validate', `screenshots/${shot.name} is neither PNG nor JPEG`);
-    }
-    log('validate', `screenshots/${shot.name} ${bytes.length} bytes sha256=${sha256Hex(bytes).slice(0, 12)}…`);
+    log('validate', `${GAME.shotsDir}/${shot.name} present (${size} bytes)`);
   }
 }
 
-// ------------------------------------------------------------------ main
+// ---------------------------------------------------------------- main
 function main(): void {
-  const started = process.hrtime.bigint();
-  const entryDir = resolve(fileURLToPath(new URL('.', import.meta.url)));
+  const entryDir = dirname(fileURLToPath(import.meta.url));
   const outEnv = process.env.MAKEFUN_OUTPUT_DIR;
-  if (outEnv === undefined || outEnv.trim() === '') {
-    fail('config', 'MAKEFUN_OUTPUT_DIR is not set; point it at the directory to fill');
-  }
-  const outDir = resolve(outEnv);
-  log('config', `game="${GAME.title}" city="${GAME.city}" version=${GAME.version} out=${outDir}`);
+  const outDir = outEnv ? resolve(outEnv) : entryDir;
+  log('start', `${GAME.title} — assembling the hand-in from ${entryDir}`);
+  log('start', `output directory: ${outDir}${outEnv ? '' : ' (MAKEFUN_OUTPUT_DIR unset, writing beside the game)'}`);
+  mkdirSync(outDir, { recursive: true });
 
   const shots = readShots(entryDir);
-  validateEntry(entryDir, shots);
+  checkInputs(entryDir, shots);
 
-  mkdirSync(outDir, { recursive: true });
-  const dossier = buildDossier(entryDir, CAPS);
-  writeFileSync(join(outDir, 'dossier.json'), dossier);
-  log('dossier', `dossier.json ${dossier.length} bytes schema=${DOSSIER_SCHEMA} sha256=${sha256Hex(dossier).slice(0, 12)}…`);
-
-  const produced: Array<{ path: string; bytes: number; sha256: string }> = [
-    { path: 'dossier.json', bytes: dossier.length, sha256: sha256Hex(dossier) },
-  ];
-  for (const shot of shots) {
-    copyFileSync(join(entryDir, 'screenshots', shot.name), join(outDir, shot.name));
-    const bytes = new Uint8Array(readFileSync(join(outDir, shot.name)));
-    produced.push({ path: shot.name, bytes: bytes.length, sha256: sha256Hex(bytes) });
-    log('screenshots', `copied ${shot.name} (${shot.query})`);
+  // The dossier: canonical bytes straight from the vendored builder.
+  let dossier: Uint8Array;
+  try {
+    dossier = buildDossier(entryDir, DOSSIER_CAPS);
+  } catch (err) {
+    fail('dossier', `the vendored builder refused this tree: ${(err as Error).message}`);
   }
+  writeFileSync(join(outDir, 'dossier.json'), dossier);
+  log('dossier', `dossier.json written (${dossier.length} bytes, sha256 ${sha256(dossier)})`);
 
+  // The renders named by shots.json, copied byte for byte.
+  const manifestShots = shots.map((shot) => {
+    const from = join(entryDir, GAME.shotsDir, shot.name);
+    const bytes = readFileSync(from);
+    copyFileSync(from, join(outDir, shot.name));
+    log('copy', `${shot.name} copied (${bytes.length} bytes, sha256 ${sha256(bytes)})`);
+    return { name: shot.name, query: shot.query, bytes: bytes.length, sha256: sha256(bytes) };
+  });
+
+  // Our own manifest next to the dossier.
   const manifest = {
     game: GAME.title,
     city: GAME.city,
-    version: GAME.version,
-    dossier_schema: DOSSIER_SCHEMA,
-    entrypoint: GAME.entrypoint,
-    shots: shots.map(s => ({ name: s.name, query: s.query })),
-    files: produced,
+    entry: GAME.entry,
+    generator: 'main.ts — Azura Heat dossier generator',
+    dossier: { file: 'dossier.json', bytes: dossier.length, sha256: sha256(dossier) },
+    screenshots: manifestShots,
   };
-  writeFileSync(join(outDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-  const ms = Number(process.hrtime.bigint() - started) / 1e6;
-  log('manifest', `manifest.json written; ${produced.length} files in ${outDir} (${ms.toFixed(0)} ms)`);
+  writeFileSync(join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
+  log('manifest', 'manifest.json written');
+  log('done', `${GAME.title} hand-in ready in ${outDir}`);
 }
 
 main();
