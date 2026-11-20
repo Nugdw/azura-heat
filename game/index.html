@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Azura Heat — Port Azura (Round 3)</title>
+<title>Azura Heat — Port Azura (Round 4)</title>
 <style>
   html, body { margin: 0; padding: 0; background: #05070b; height: 100%; }
   body { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
@@ -16,12 +16,27 @@
 <script>
 'use strict';
 /* =====================================================================
-   AZURA HEAT — ROUND 3
+   AZURA HEAT — ROUND 4
    An original top-down open-world crime game set in Port Azura, a
    fictional coastal city: 6x5 blocks, one long beach, a pier, and a
    police force with strong opinions about your driving.
 
-   Round 3 adds, on top of the round-2 core (traffic, pedestrians,
+   Round 4 adds, on top of the round-3 city (day-night cycle, four
+   missions including Sunset Taxi Run, 12 cash coins, 24 citizens,
+   taxis & vans, sprint + stamina, horn, WebAudio, minimap v2, score):
+     - a real pause menu (P / Esc) that freezes the simulation and
+       summarises missions done, coins, cash, score and the day
+     - a persistent best score in localStorage, shown on the title
+       screen and again on the mission-complete screen
+     - a repeatable side hustle, Paket Pantai (Beach Parcel): grab a
+       parcel at a glowing pickup, race it to the drop-off before the
+       timer dies, get paid in cash and score, then a fresh random run
+     - a simple radio (R) with three stops — off, synthwave, chill —
+       all procedural WebAudio note patterns, no audio files at all
+     - fairer heat: wanted stars now bleed away slowly while no police
+       unit has eyes on you for a few seconds (stay out of sight)
+
+   Round 3 added, on top of the round-2 core (traffic, pedestrians,
    0-5 star wanted system, bust/hospital loop, fixed-step simulation):
      - a full day-night cycle (sun, dusk glow, streetlights, lit windows)
      - a 4th mission: Sunset Taxi Run, from a new Beach Kiosk contact
@@ -161,6 +176,13 @@ const S = {
   lastFine: 0,
   spawnCd: 0,
   sirenT: 0,
+  // round 4 fields
+  bestScore: loadBestScore(),   // persistent record, see loadBestScore()
+  isNewBest: false,             // true once this run beats the record
+  unseenT: 0,                   // seconds since a cop last had eyes on you
+  parcel: null,                 // Paket Pantai run: {phase,x,y,tx,ty,tLeft,fromLabel,toLabel}
+  parcelDone: 0,                // completed Paket Pantai deliveries
+  parcelCd: 0,                  // cooldown before the next parcel spawns
 };
 const stars = () => Math.min(5, Math.floor(S.heat / 120));
 
@@ -175,6 +197,85 @@ let peds = [];        // {x,y,a,speed,color,kind, tx,ty, flee, fall, say, sayT}
 let coins = [];       // {x,y,taken,ph}
 let jobCar = null;
 const TOTAL_COINS = 12;
+
+// ---------- round 4: best score (localStorage) ----------
+// The best score survives reloads. Storage can be blocked (private
+// mode, file:// quirks), so every access is wrapped: failing to read
+// or write the record must never break the game itself.
+const BEST_SCORE_KEY = 'azura-heat-best-score-v1';
+function loadBestScore() {
+  try {
+    const raw = window.localStorage.getItem(BEST_SCORE_KEY);
+    const n = raw === null ? 0 : Number(raw);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+  } catch (e) { return 0; }
+}
+function saveBestScore(value) {
+  try { window.localStorage.setItem(BEST_SCORE_KEY, String(Math.floor(value))); } catch (e) { /* storage is a bonus */ }
+}
+
+// ---------- round 4: radio (procedural WebAudio, no audio files) ----------
+// Three stops on the dial: 0 = off, 1 = synthwave, 2 = chill. Each
+// channel is just a looping note pattern the step loop feeds to tone()
+// on a beat clock, so the "stations" cost nothing but oscillators.
+const RADIO_CHANNELS = [
+  { id: 'off', name: 'RADIO OFF' },
+  { id: 'synthwave', name: 'AZURA WAVE 98.4 — SYNTHWAVE' },
+  { id: 'chill', name: 'PIER FM 91.1 — CHILL' },
+];
+const RADIO_PATTERNS = {
+  // driving minor-key bassline + sparkle, eighth notes at ~132 bpm
+  synthwave: { stepSec: 0.227, type: 'sawtooth', vol: 0.028,
+    notes: [110, 0, 110, 0, 131, 0, 110, 0, 98, 0, 98, 0, 147, 0, 165, 0,
+            110, 0, 110, 0, 131, 0, 110, 0, 196, 0, 165, 0, 147, 0, 131, 0] },
+  // lazy major-7 arpeggio, eighth notes at ~76 bpm
+  chill: { stepSec: 0.395, type: 'sine', vol: 0.04,
+    notes: [262, 330, 392, 494, 392, 330, 294, 370, 440, 554, 440, 370,
+            247, 311, 370, 466, 370, 311, 262, 330, 392, 494, 587, 494] },
+};
+const radio = { channel: 0, stepIdx: 0, nextIn: 0 };
+function cycleRadio() {
+  radio.channel = (radio.channel + 1) % RADIO_CHANNELS.length;
+  radio.stepIdx = 0; radio.nextIn = 0;
+  notice(RADIO_CHANNELS[radio.channel].name, 1.8);
+  if (radio.channel !== 0) tone(880, 0.07, 'square', 0.04);
+}
+function updateRadio(dt) {
+  if (SHOTMODE || S.muted || radio.channel === 0 || S.mode !== 'playing') return;
+  const pat = RADIO_PATTERNS[RADIO_CHANNELS[radio.channel].id];
+  if (!pat) return;
+  radio.nextIn -= dt;
+  if (radio.nextIn > 0) return;
+  radio.nextIn = pat.stepSec;
+  const f = pat.notes[radio.stepIdx % pat.notes.length];
+  radio.stepIdx++;
+  if (f > 0) tone(f, pat.stepSec * 0.92, pat.type, pat.vol);
+}
+
+// ---------- round 4: Paket Pantai (Beach Parcel) side activity ----------
+// A repeatable delivery hustle, independent of the four story jobs:
+// touch the glowing parcel pickup and a drop-off lights up somewhere
+// else in the city. Beat the timer for cash + score; run out of time
+// and the parcel is worthless. Either way a fresh random run follows.
+const PARCEL_TIME = 75;              // seconds to make the delivery
+const PARCEL_PAY = 120;              // cash on delivery (+ score too)
+const PARCEL_PICKUPS = [
+  { x: 160, y: CITY_H + 96, label: 'the pier kiosk' },
+  { x: 940, y: CITY_H + 96, label: 'the beach kiosk' },
+  { x: VX[1], y: HY[4] + 52, label: 'the south-west corner' },
+  { x: VX[5], y: CITY_H + 84, label: 'the beachfront stand' },
+];
+const PARCEL_DROPS = [
+  { x: VX[6], y: HY[1], label: 'the north depot' },
+  { x: VX[0], y: HY[0] + 52, label: 'the old lighthouse gate' },
+  { x: VX[3], y: HY[2], label: 'the mid-town plaza' },
+  { x: VX[6], y: HY[4] + 40, label: 'St. Azura General' },
+  { x: VX[2], y: HY[5] - 40, label: 'the south docks office' },
+];
+// S was initialised before BEST_SCORE_KEY existed (temporal dead zone),
+// so its bestScore field started at the guarded fallback of 0. Now that
+// the key constant is live, load the real stored record into the state.
+S.bestScore = loadBestScore();
 
 // ---------- world generation (all draws from the seeded rng) ----------
 function newCar(x, y, a, mode) {
@@ -321,6 +422,64 @@ function onScreen(x, y, m) {
   return x > S.camX - m && x < S.camX + VW + m && y > S.camY - m && y < S.camY + VH + m;
 }
 
+// ---------- round 4: score record, pause, parcel logic ----------
+function recordScore() {
+  // Called whenever the score jumps; keeps the stored record honest.
+  if (S.score > S.bestScore) {
+    S.bestScore = Math.floor(S.score);
+    S.isNewBest = true;
+    saveBestScore(S.bestScore);
+  }
+}
+function togglePause() {
+  if (S.mode === 'playing') { S.mode = 'paused'; }
+  else if (S.mode === 'paused') { S.mode = 'playing'; }
+}
+function startParcelRun() {
+  // Pick a pickup and a drop-off that are genuinely apart, using the
+  // same seeded stream as the rest of the world generation at runtime.
+  const from = PARCEL_PICKUPS[Math.floor(rng() * PARCEL_PICKUPS.length)];
+  let to = PARCEL_DROPS[Math.floor(rng() * PARCEL_DROPS.length)];
+  for (let guard = 0; guard < 6 && dist2(from.x, from.y, to.x, to.y) < 700 * 700; guard++) {
+    to = PARCEL_DROPS[Math.floor(rng() * PARCEL_DROPS.length)];
+  }
+  S.parcel = { phase: 'pickup', x: from.x, y: from.y, tx: to.x, ty: to.y,
+               tLeft: Math.round(PARCEL_TIME * 60), fromLabel: from.label, toLabel: to.label };
+}
+function updateParcel(dt) {
+  if (SHOTMODE) return;
+  if (!S.parcel) {
+    S.parcelCd -= dt;
+    if (S.parcelCd <= 0) startParcelRun();
+    return;
+  }
+  const p = S.parcel;
+  const px = player.car ? player.car.x : player.x, py = player.car ? player.car.y : player.y;
+  if (p.phase === 'pickup') {
+    if (dist2(px, py, p.x, p.y) < 46 * 46) {
+      p.phase = 'carry';
+      notice('Paket Pantai picked up! Deliver to ' + p.toLabel + ' — ' + PARCEL_TIME + 's!', 3);
+      jingle([659, 880], 0.07);
+    }
+    return;
+  }
+  // carrying: the clock is ticking
+  p.tLeft--;
+  if (p.tLeft <= 0) {
+    S.parcel = null; S.parcelCd = 6;
+    notice('Paket Pantai expired — soggy and worthless. A new one will turn up.', 3);
+    tone(220, 0.25, 'square', 0.05, 160);
+    return;
+  }
+  if (dist2(px, py, p.tx, p.ty) < 52 * 52) {
+    S.cash += PARCEL_PAY; S.score += PARCEL_PAY; S.parcelDone++;
+    recordScore();
+    S.parcel = null; S.parcelCd = 5;
+    notice('Paket Pantai delivered! +$' + PARCEL_PAY + '  (deliveries: ' + S.parcelDone + ')', 3);
+    jingle([784, 988, 1319], 0.08);
+  }
+}
+
 // ---------- audio v2 (WebAudio, all procedural; M mutes; off in shot mode) ----------
 let audioCtx = null, engineOsc = null, engineGain = null;
 function ac() {
@@ -384,10 +543,8 @@ addEventListener('keydown', (e) => {
   keys[e.code] = true;
   if (e.code === 'KeyM') { S.muted = !S.muted; notice(S.muted ? 'Sound off' : 'Sound on', 1); }
   if (e.code === 'KeyH' && S.mode === 'playing') honk();
-  if (e.code === 'KeyP' || e.code === 'Escape') {
-    if (S.mode === 'playing') S.mode = 'paused';
-    else if (S.mode === 'paused') S.mode = 'playing';
-  }
+  if (e.code === 'KeyR' && (S.mode === 'playing' || S.mode === 'paused')) cycleRadio();
+  if (e.code === 'KeyP' || e.code === 'Escape') togglePause();
   if (e.code === 'Enter') confirmOverlay();
   if (e.code === 'KeyE' && S.mode === 'playing') interact();
 });
@@ -400,6 +557,7 @@ function confirmOverlay() {
   else if (S.mode === 'downed') respawnAfterDowned();
   else if (S.mode === 'complete') {
     S.cash += S.completeInfo.pay; S.score += S.completeInfo.pay;
+    recordScore();
     S.doneMissions[S.completeInfo.id] = true;
     S.completeInfo = null; S.mode = 'playing';
   }
@@ -469,6 +627,9 @@ function respawnAfterDowned() {
 
 // ---------- simulation ----------
 function step(dt) {
+  // Round 4 pause menu: a paused game is a frozen game — no clock, no
+  // traffic, no timers. Render still draws the world + the menu.
+  if (S.mode === 'paused') return;
   S.steps++;
   if (S.noticeT > 0) S.noticeT--;
   if (S.shake > 0) S.shake = Math.max(0, S.shake - 30 * dt);
@@ -482,6 +643,8 @@ function step(dt) {
   updatePlayer(dt);
   updateCops(dt);
   updateMission(dt);
+  updateParcel(dt);
+  updateRadio(dt);
   engineSound();
   // distant siren two-tone while the PD is looking for you
   if (stars() > 0 && cops.length) {
@@ -499,6 +662,18 @@ function step(dt) {
     }
   }
   if (S.steps - S.lastCrime > 360 && S.heat > 0) S.heat = Math.max(0, S.heat - 26 * dt);
+  // Round 4 heat balance: stars bleed away while nobody in uniform can
+  // see you. A cop within sight range (340px) resets the unseen timer;
+  // after 3 unseen seconds the heat drains slowly but steadily, so
+  // breaking line of sight is a real escape plan, not just a delay.
+  {
+    const px2 = player.car ? player.car.x : player.x, py2 = player.car ? player.car.y : player.y;
+    let seen = false;
+    for (const c of cops) if (dist2(px2, py2, c.x, c.y) < 340 * 340) { seen = true; break; }
+    if (seen) S.unseenT = 0; else S.unseenT += dt;
+    if (S.unseenT > 3 && S.heat > 0) S.heat = Math.max(0, S.heat - 14 * dt);
+  }
+  recordScore();
   if (S.steps - player.lastHurt > 360 && player.hp > 0 && player.hp < 100) player.hp = Math.min(100, player.hp + 1.6 * dt);
   // bust meter: close police + you barely moving = cuffs
   const px = player.car ? player.car.x : player.x, py = player.car ? player.car.y : player.y;
@@ -525,6 +700,7 @@ function updateCoins() {
     if (c.taken) continue;
     if (dist2(px, py, c.x, c.y) < 30 * 30) {
       c.taken = true; S.coinsGot++; S.cash += 25; S.score += 50;
+      recordScore();
       jingle([988, 1319], 0.06);
       notice('Cash stash! +$25  (' + S.coinsGot + '/' + TOTAL_COINS + ')', 1.6);
     }
@@ -795,6 +971,7 @@ function render() {
   ctx.translate(-Math.round(S.camX), -Math.round(S.camY));
   drawWorld();
   drawMarkers();
+  drawParcelMarkers();
   drawCoins();
   for (const p of peds) if (onScreen(p.x, p.y, 30)) drawPed(p);
   for (const c of civCars) if (onScreen(c.x, c.y, 60)) drawCar(c);
@@ -943,6 +1120,28 @@ function drawMarkers() {
     ctx.fillStyle = '#ffd23f'; ctx.fillRect(-7, -7, 14, 14); ctx.restore();
   }
 }
+function drawParcelMarkers() {
+  // Paket Pantai beacons: teal for the pickup, magenta for the drop-off,
+  // each with the same light-beam language as mission markers so the
+  // player reads them instantly without a tutorial.
+  const p = S.parcel;
+  if (!p || S.mode === 'title') return;
+  const active = p.phase === 'pickup' ? { x: p.x, y: p.y, col: '#2dd4bf' } : { x: p.tx, y: p.ty, col: '#e879f9' };
+  if (!onScreen(active.x, active.y, 90)) return;
+  const g = ctx.createLinearGradient(0, active.y - 170, 0, active.y);
+  g.addColorStop(0, 'rgba(45,212,191,0)'); g.addColorStop(1, 'rgba(45,212,191,.30)');
+  if (p.phase === 'carry') { g.addColorStop(0, 'rgba(232,121,249,0)'); g.addColorStop(1, 'rgba(232,121,249,.30)'); }
+  ctx.fillStyle = g; ctx.fillRect(active.x - 10, active.y - 170, 20, 170);
+  ctx.strokeStyle = active.col; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(active.x, active.y, 18 + Math.sin(S.steps * 0.1) * 3, 0, 7); ctx.stroke();
+  // a little parcel box glyph at the beacon centre
+  ctx.fillStyle = '#92400e';
+  ctx.fillRect(active.x - 8, active.y - 6, 16, 13);
+  ctx.fillStyle = '#f59e0b';
+  ctx.fillRect(active.x - 8, active.y - 6, 16, 4);
+  ctx.fillRect(active.x - 1.5, active.y - 6, 3, 13);
+  text(p.phase === 'pickup' ? 'PAKET PANTAI — PICKUP' : 'PAKET PANTAI — DROP-OFF', active.x, active.y - 32, 12, '#ffffff', 'center');
+}
 function drawCoins() {
   for (const c of coins) {
     if (c.taken || !onScreen(c.x, c.y, 40)) continue;
@@ -1031,7 +1230,7 @@ function drawPlayer() {
 }
 
 function drawHUD() {
-  panel(14, 14, 216, 104);
+  panel(14, 14, 216, 124);
   text('CASH  $' + S.cash, 28, 36, 21, '#7CFC9A');
   text('SCORE ' + Math.floor(S.score), 28, 58, 13, '#e5e7eb', 'left', 'normal');
   text('HP', 128, 58, 11, '#9ca3af', 'left', 'normal');
@@ -1049,6 +1248,8 @@ function drawHUD() {
     ctx.fillStyle = '#facc15'; ctx.fillRect(84, 71, 126 * S.stamina / 100, 8);
   }
   text('COINS ' + S.coinsGot + '/' + TOTAL_COINS + '   ·   DAY ' + S.day, 28, 96, 12, '#fde68a', 'left', 'normal');
+  text('BEST ' + S.bestScore + (S.isNewBest ? ' ★ NEW' : ''), 28, 114, 12, '#7dd3fc', 'left', 'normal');
+  if (radio.channel !== 0) text('♪ ' + RADIO_CHANNELS[radio.channel].name, 122, 114, 10, '#c4b5fd', 'left', 'normal');
   // clock, top centre, with a sun/moon marker
   const sun = sunElevation(S.timeOfDay);
   text((sun > 0 ? 'DAY' : 'NIGHT') + '  ' + clockText(S.timeOfDay), VW / 2, 58, 13, sun > 0 ? '#bae6fd' : '#c4b5fd', 'center');
@@ -1069,7 +1270,16 @@ function drawHUD() {
     text(m.def.name + '  ·  ' + mm + ':' + ss, VW / 2, VH - 46, 14, '#ffd23f', 'center');
     text(stg.label, VW / 2, VH - 26, 13, '#ffffff', 'center', 'normal');
   }
-  text('WASD move · Shift sprint · E enter/exit · H horn · P pause · M sound' + (S.muted ? ' · MUTED' : ''), 16, VH - 16, 12, 'rgba(255,255,255,.55)', 'left', 'normal');
+  if (S.parcel) {
+    const p = S.parcel;
+    const label = p.phase === 'pickup'
+      ? 'Paket Pantai: pick up the parcel at ' + p.fromLabel
+      : 'Paket Pantai: deliver to ' + p.toLabel + '  ·  ' + Math.max(0, Math.ceil(p.tLeft / 60)) + 's left';
+    panel(VW / 2 - 265, S.mission ? VH - 112 : VH - 64, 530, 40);
+    text(label, VW / 2, (S.mission ? VH - 112 : VH - 64) + 20, 13, p.phase === 'pickup' ? '#5eead4' : '#f0abfc', 'center', 'normal');
+  }
+  if (stars() > 0 && S.unseenT > 3) text('OUT OF SIGHT — HEAT FALLING', VW / 2, 128, 12, '#7dd3fc', 'center', 'normal');
+  text('WASD move · Shift sprint · E enter/exit · H horn · R radio · P pause · M sound' + (S.muted ? ' · MUTED' : ''), 16, VH - 16, 12, 'rgba(255,255,255,.55)', 'left', 'normal');
 }
 function drawMinimap() {
   // minimap v2: bigger, with coins, citizens, compass and a clock strip
@@ -1104,6 +1314,12 @@ function drawMinimap() {
     ctx.fillStyle = '#ffd23f';
     ctx.beginPath(); ctx.arc(x0 + tx * sc, y0 + ty * sc, 4 + Math.sin(S.steps * 0.15) * 1.2, 0, 7); ctx.fill();
   }
+  if (S.parcel) {
+    const p = S.parcel;
+    const mx = p.phase === 'pickup' ? p.x : p.tx, my = p.phase === 'pickup' ? p.y : p.ty;
+    ctx.fillStyle = p.phase === 'pickup' ? '#2dd4bf' : '#e879f9';
+    ctx.beginPath(); ctx.arc(x0 + mx * sc, y0 + my * sc, 3.6, 0, 7); ctx.fill();
+  }
   for (const c of cops) { ctx.fillStyle = '#2f7bff'; ctx.beginPath(); ctx.arc(x0 + c.x * sc, y0 + c.y * sc, 3, 0, 7); ctx.fill(); }
   // player as a rotated arrow so heading reads at a glance
   ctx.save();
@@ -1123,18 +1339,29 @@ function drawOverlays() {
   ctx.fillRect(0, 0, VW, VH);
   if (S.mode === 'title') {
     text('AZURA HEAT', VW / 2, 200, 74, '#ffd23f', 'center');
-    text('P O R T   A Z U R A  —  R O U N D  3', VW / 2, 252, 20, '#7dd3fc', 'center');
+    text('P O R T   A Z U R A  —  R O U N D  4', VW / 2, 252, 20, '#7dd3fc', 'center');
     text('An original top-down crime sandbox. Steal rides, run jobs for the docks,', VW / 2, 306, 17, '#e5e7eb', 'center', 'normal');
     text('Café Azul and the beach kiosk, grab hidden cash, and outrun the Azura PD.', VW / 2, 330, 17, '#e5e7eb', 'center', 'normal');
-    text('New in round 3: a living day-night city, a taxi mission, 12 cash stashes,', VW / 2, 362, 15, '#fde68a', 'center', 'normal');
-    text('joggers and beachgoers, taxis and vans, sprinting, horns and real engine sound.', VW / 2, 384, 15, '#fde68a', 'center', 'normal');
-    text('WASD / arrows — move & drive      E — enter / exit car, take a job', VW / 2, 428, 16, '#cbd5e1', 'center', 'normal');
-    text('Shift — sprint      H — horn      P — pause      M — sound on/off', VW / 2, 454, 16, '#cbd5e1', 'center', 'normal');
-    text('PRESS ENTER OR CLICK TO PLAY', VW / 2, 510, 21, '#7CFC9A', 'center');
+    text('New in round 4: a real pause menu, a saved best score, Paket Pantai parcel runs,', VW / 2, 362, 15, '#fde68a', 'center', 'normal');
+    text('a three-stop procedural radio, and heat that fades while the PD cannot see you.', VW / 2, 384, 15, '#fde68a', 'center', 'normal');
+    if (S.bestScore > 0) text('BEST SCORE  ' + S.bestScore, VW / 2, 410, 16, '#7dd3fc', 'center');
+    text('WASD / arrows — move & drive      E — enter / exit car, take a job', VW / 2, 436, 16, '#cbd5e1', 'center', 'normal');
+    text('Shift — sprint      H — horn      R — radio      P — pause      M — sound on/off', VW / 2, 462, 16, '#cbd5e1', 'center', 'normal');
+    text('PRESS ENTER OR CLICK TO PLAY', VW / 2, 518, 21, '#7CFC9A', 'center');
   } else if (S.mode === 'paused') {
-    text('PAUSED', VW / 2, VH / 2 - 10, 46, '#ffffff', 'center');
-    text('Day ' + S.day + ' · ' + clockText(S.timeOfDay) + ' · Score ' + Math.floor(S.score), VW / 2, VH / 2 + 26, 16, '#fde68a', 'center', 'normal');
-    text('P or Esc to keep driving', VW / 2, VH / 2 + 56, 16, '#cbd5e1', 'center', 'normal');
+    // Round 4 pause menu: the simulation is frozen (see step()), so this
+    // is a genuine progress summary, not a snapshot of a moving game.
+    const jobsDone = Object.keys(S.doneMissions).length;
+    panel(VW / 2 - 250, VH / 2 - 150, 500, 300, 0.72);
+    text('PAUSED', VW / 2, VH / 2 - 108, 44, '#ffffff', 'center');
+    text('—  P O R T   A Z U R A   ·   D A Y  ' + S.day + '  ·  ' + clockText(S.timeOfDay) + '  —', VW / 2, VH / 2 - 70, 14, '#7dd3fc', 'center', 'normal');
+    text('Missions complete   ' + jobsDone + ' / ' + MISSIONS.length, VW / 2, VH / 2 - 34, 17, '#e5e7eb', 'center', 'normal');
+    text('Coins found   ' + S.coinsGot + ' / ' + TOTAL_COINS + '      ·      Paket Pantai deliveries   ' + S.parcelDone, VW / 2, VH / 2 - 6, 17, '#e5e7eb', 'center', 'normal');
+    text('Cash   $' + S.cash + '      ·      Score   ' + Math.floor(S.score), VW / 2, VH / 2 + 22, 17, '#e5e7eb', 'center', 'normal');
+    text('Best score   ' + S.bestScore + (S.isNewBest ? '  (new record this run!)' : ''), VW / 2, VH / 2 + 50, 17, '#fde68a', 'center', 'normal');
+    text('Wanted   ' + '★'.repeat(stars()) + '☆'.repeat(5 - stars()) + '      ·      Radio   ' + RADIO_CHANNELS[radio.channel].name, VW / 2, VH / 2 + 78, 15, '#cbd5e1', 'center', 'normal');
+    if (S.mission) text('On the clock: ' + S.mission.def.name + ' — ' + Math.max(0, Math.ceil(S.mission.tLeft / 60)) + 's left', VW / 2, VH / 2 + 104, 14, '#ffd23f', 'center', 'normal');
+    text('P or Esc to keep driving', VW / 2, VH / 2 + 132, 16, '#7CFC9A', 'center');
   } else if (S.mode === 'busted') {
     text('BUSTED', VW / 2, VH / 2 - 26, 58, '#f87171', 'center');
     text('The Azura PD walks you to the station. Fine: $' + (S.lastFine || 0), VW / 2, VH / 2 + 24, 18, '#e5e7eb', 'center', 'normal');
@@ -1149,7 +1376,8 @@ function drawOverlays() {
     text(S.completeInfo.name, VW / 2, VH / 2 + 12, 22, '#ffffff', 'center');
     text('+$' + S.completeInfo.pay, VW / 2, VH / 2 + 48, 26, '#ffd23f', 'center');
     text('Jobs done: ' + done + '/' + MISSIONS.length + '   ·   Score: ' + Math.floor(S.score + S.completeInfo.pay) + '   ·   Coins: ' + S.coinsGot + '/' + TOTAL_COINS, VW / 2, VH / 2 + 82, 15, '#cbd5e1', 'center', 'normal');
-    if (!SHOTMODE) text('PRESS ENTER', VW / 2, VH / 2 + 114, 17, '#cbd5e1', 'center');
+    text('Best score: ' + Math.max(S.bestScore, Math.floor(S.score + S.completeInfo.pay)) + (S.isNewBest ? '  ★ NEW RECORD' : ''), VW / 2, VH / 2 + 104, 14, '#7dd3fc', 'center', 'normal');
+    if (!SHOTMODE) text('PRESS ENTER', VW / 2, VH / 2 + 132, 17, '#cbd5e1', 'center');
   }
 }
 

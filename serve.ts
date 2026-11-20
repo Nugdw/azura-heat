@@ -1,4 +1,4 @@
-// Azura Heat — Round 3 development server.
+// Azura Heat — Round 4 development server.
 //
 // A tiny static server for game/ (Node 22, standard library only), so the
 // game can be played locally without a build step:
@@ -7,6 +7,13 @@
 //   node serve.ts --port 9000     a different port
 //   PORT=9000 node serve.ts       the environment wins over the default,
 //                                 but an explicit --port wins over both
+//
+// Round-4 additions over the round-3 server:
+//   - GET /__version answers a JSON identity card for the game — its
+//     name, city, round and headline round-4 features — so scripts and
+//     reviewers can confirm which build is being served without
+//     downloading the whole game page;
+//   - the /__health probe and the startup banner now report round 4.
 //
 // Round-3 additions over the plain static server:
 //   - GET /__health answers a one-line JSON liveness probe (handy for
@@ -70,7 +77,25 @@ const server = createServer((request, response) => {
   }
   // liveness probe for scripts: never touches the filesystem
   if (pathname === '/__health') {
-    const body = JSON.stringify({ game: 'Azura Heat', round: 3, status: 'ok' }) + '\n';
+    const body = JSON.stringify({ game: 'Azura Heat', round: 4, status: 'ok' }) + '\n';
+    response.writeHead(200, {
+      'content-type': 'application/json; charset=utf-8',
+      'content-length': Buffer.byteLength(body),
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+    }).end(body);
+    logRequest(request.method ?? '?', pathname, 200, Buffer.byteLength(body));
+    return;
+  }
+  // identity card for scripts and reviewers: which game, which round,
+  // and what that round added — again without touching the filesystem
+  if (pathname === '/__version') {
+    const body = JSON.stringify({
+      game: 'Azura Heat',
+      city: 'Port Azura',
+      round: 4,
+      features: ['pause menu', 'persistent best score', 'Paket Pantai side activity', 'procedural radio', 'unseen heat decay'],
+    }) + '\n';
     response.writeHead(200, {
       'content-type': 'application/json; charset=utf-8',
       'content-length': Buffer.byteLength(body),
@@ -116,10 +141,10 @@ const server = createServer((request, response) => {
   if (request.method === 'HEAD') { response.end(); return; }
   createReadStream(file).pipe(response);
 }).listen(port, '127.0.0.1', () => {
-  console.log(`[azura-heat] Azura Heat round 3 — game/ is on http://localhost:${port}`);
+  console.log(`[azura-heat] Azura Heat round 4 — game/ is on http://localhost:${port}`);
   console.log(`[azura-heat] play:  http://localhost:${port}/`);
   console.log(`[azura-heat] shots: http://localhost:${port}/?shot=start&seed=1 · ?shot=play&seed=1 · ?shot=end&seed=1`);
-  console.log(`[azura-heat] probe: http://localhost:${port}/__health`);
+  console.log(`[azura-heat] probe: http://localhost:${port}/__health · http://localhost:${port}/__version`);
 });
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {

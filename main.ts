@@ -1,4 +1,4 @@
-// Azura Heat — Round 3 dossier generator.
+// Azura Heat — Round 4 dossier generator.
 //
 // Running `MAKEFUN_OUTPUT_DIR=<dir> node main.ts` from the repository root
 // assembles the make.fun hand-in for the game in game/:
@@ -9,14 +9,23 @@
 //   <dir>/2-play.jpg      verbatim from screenshots/
 //   <dir>/3-end.jpg
 //   <dir>/manifest.json   this generator's own index of what it wrote
-//                         (names, byte counts, sha256, plus the round-3
-//                         feature checklist it verified in the game page)
+//                         (names, byte counts, sha256, plus the round-4
+//                         feature checklist it verified in the game page
+//                         and the round-4 additions listed separately)
 //
 // The dossier itself is produced by vendor/makefun-game.ts, the same code
 // the bounty scores with, so what is written here is byte-identical to
 // what the scorer computes from the same tree.
 //
-// Round 3 changes to this generator (the dossier format is untouched):
+// Round 4 changes to this generator (the dossier format is untouched):
+//   - the feature checklist now also demands the round-4 markers: the
+//     pause menu, the localStorage best-score record, the Paket Pantai
+//     side activity, the procedural radio and the unseen-heat decay;
+//   - the manifest records round 4 and splits its feature list into the
+//     inherited checklist plus a dedicated `round4Features` array, so a
+//     reviewer can see exactly what this round added at a glance.
+//
+// Round 3 changes to this generator:
 //   - the manifest now records the round, the game's feature markers and
 //     the coin/mission counts it found in game/index.html, so a hand-in
 //     can be sanity-checked without opening a browser;
@@ -34,11 +43,21 @@ import { buildDossier, INDEX_HTML_MAX_BYTES } from './vendor/makefun-game.ts';
 const GAME = {
   title: 'Azura Heat',
   city: 'Port Azura',
-  round: 3,
+  round: 4,
   entry: 'game/index.html',
   shotsFile: 'shots.json',
   shotsDir: 'screenshots',
 } as const;
+
+// What round 4 added, recorded verbatim in the manifest so the hand-in
+// carries its own changelog.
+const ROUND4_FEATURES: ReadonlyArray<string> = [
+  'pause menu (P / Esc) freezing the simulation with a progress summary',
+  'persistent best score in localStorage, shown on title and complete screens',
+  'Paket Pantai side activity: timed parcel pickup and delivery, repeatable with random points',
+  'procedural radio (R): off / synthwave / chill WebAudio note patterns',
+  'wanted heat decays while unseen by police for over three seconds',
+];
 
 // The caps the dossier is built under: the whole game source fits in the
 // text budget, screenshots are capped at the hand-in limit of 256 KiB.
@@ -49,9 +68,10 @@ const DOSSIER_CAPS = {
   game_max_bytes: 50331648,
 } as const;
 
-// Feature markers the round-3 page must contain. Each entry is a plain
+// Feature markers the round-4 page must contain. Each entry is a plain
 // substring of game/index.html; if one disappears, the hand-in is not
-// the round-3 game anymore and the generator says so before writing.
+// the round-4 game anymore and the generator says so before writing.
+// The first block is inherited from round 3; the second is round 4's.
 const FEATURE_MARKERS: ReadonlyArray<{ marker: string; label: string }> = [
   { marker: 'DAY_SECONDS', label: 'day-night cycle' },
   { marker: 'Sunset Taxi Run', label: 'fourth mission (Sunset Taxi Run)' },
@@ -60,6 +80,12 @@ const FEATURE_MARKERS: ReadonlyArray<{ marker: string; label: string }> = [
   { marker: 'engineSound', label: 'WebAudio engine sound' },
   { marker: 'drawMinimap', label: 'minimap' },
   { marker: '__shotReady', label: 'shot-mode render hook' },
+  // --- round 4 ---
+  { marker: 'togglePause', label: 'round-4 pause menu' },
+  { marker: 'azura-heat-best-score-v1', label: 'round-4 persistent best score' },
+  { marker: 'Paket Pantai', label: 'round-4 Paket Pantai side activity' },
+  { marker: 'RADIO_CHANNELS', label: 'round-4 procedural radio' },
+  { marker: 'unseenT', label: 'round-4 unseen heat decay' },
 ];
 
 // ---------------------------------------------------------------- logging
@@ -134,12 +160,12 @@ function inspectGame(entryDir: string): GameFacts {
   const html = readFileSync(indexPath, 'utf8');
   const features: string[] = [];
   for (const { marker, label } of FEATURE_MARKERS) {
-    if (!html.includes(marker)) fail('validate', `${GAME.entry} is missing the round-3 feature "${label}" (marker ${JSON.stringify(marker)} not found)`);
+    if (!html.includes(marker)) fail('validate', `${GAME.entry} is missing the feature "${label}" (marker ${JSON.stringify(marker)} not found)`);
     features.push(label);
   }
   const missions = (html.match(/\{ id: '[a-z]+', contact:/g) || []).length;
   if (missions < 4) fail('validate', `${GAME.entry} should define at least 4 missions, found ${missions}`);
-  log('validate', `round-3 features present: ${features.join('; ')}`);
+  log('validate', `round-4 features present: ${features.join('; ')}`);
   log('validate', `missions defined in page: ${missions}`);
   return { bytes, features, missions };
 }
@@ -198,7 +224,8 @@ function main(): void {
     entryBytes: facts.bytes,
     missions: facts.missions,
     features: facts.features,
-    generator: 'main.ts — Azura Heat round-3 dossier generator',
+    round4Features: [...ROUND4_FEATURES],
+    generator: 'main.ts — Azura Heat round-4 dossier generator',
     dossier: { file: 'dossier.json', bytes: dossier.length, sha256: sha256(dossier) },
     screenshots: manifestShots,
   };

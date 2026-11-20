@@ -8,16 +8,47 @@
 fictional coastal city of six-by-five blocks, one long beach and a lot of bad
 decisions. Roam the grid on foot or in whatever car you can hot-wire, run jobs
 for Marlo at the docks, Inés at Café Azul and — new in round 3 — Lia at the
-Beach Kiosk, collect the cash stashes hidden around town, and manage your
-wanted level, because the Azura PD is always one ram away from a very
-personal conversation.
+Beach Kiosk, collect the cash stashes hidden around town, deliver beach
+parcels on the side, and manage your wanted level, because the Azura PD
+is always one ram away from a very personal conversation.
 
 Everything is a single self-contained `game/index.html` in vanilla JavaScript
 and Canvas 2D: traffic with somewhere to be, pedestrians with survival
 instincts and opinions, a 0–5 star wanted system with chasing police, bust
-and hospital mechanics, four missions, a living day-night cycle, a live
-minimap and a fixed-timestep simulation driven by one seeded random
-stream — no assets, no build step, no network.
+and hospital mechanics, four missions plus a repeatable parcel hustle, a
+living day-night cycle, a live minimap and a fixed-timestep simulation
+driven by one seeded random stream — no assets, no build step, no network.
+
+## What's new in round 4
+
+- **A real pause menu.** Press **P** or **Esc** and the simulation
+  actually stops — no clock, no traffic, no timers — while a summary
+  panel shows missions completed, coins found, Paket Pantai deliveries,
+  cash, score, your best score, wanted stars, the radio station and the
+  mission clock you are on. Press P or Esc again to roll.
+- **A best score that sticks.** Your record score is saved in
+  `localStorage` and shown on the title screen, in the HUD, in the
+  pause menu and on the mission-complete screen (with a ★ when the run
+  you just finished set a new record).
+- **Paket Pantai — a repeatable side hustle.** A parcel pickup glows
+  teal somewhere on the beachfront or in town. Touch it and a magenta
+  drop-off lights up across the city: deliver within 75 seconds for
+  $120 cash and 120 score. Let the timer die and the parcel is soggy
+  and worthless — either way, a fresh run with fresh random points
+  follows a few seconds later. It runs alongside the story jobs, not
+  instead of them.
+- **A three-stop radio.** Press **R** to cycle the dial: off →
+  *Azura Wave 98.4* (a driving synthwave bassline) → *Pier FM 91.1*
+  (a lazy chill arpeggio) → off again. Both stations are procedural
+  WebAudio note patterns; there are still no audio files in this game.
+- **Heat that rewards breaking line of sight.** Wanted stars already
+  faded long after your last crime; now they also bleed away slowly
+  whenever no police unit has eyes on you for more than three seconds,
+  and the HUD says `OUT OF SIGHT — HEAT FALLING` while it happens.
+  Hiding is a plan now, not just a pause between chases.
+- **Server identity card.** `serve.ts` now answers `GET /__version`
+  with a JSON card naming the game, its city, round 4 and the headline
+  features of the round, next to the existing `/__health` probe.
 
 ## What's new in round 3
 
@@ -57,8 +88,9 @@ Open `game/index.html` in any modern browser, or serve the game folder:
 node serve.ts            # then visit http://localhost:8080
 ```
 
-`serve.ts` also answers `GET /__health` with a small JSON probe, logs
-every request, and honours `--port <n>` / `PORT=<n>`. The game starts
+`serve.ts` also answers `GET /__health` with a small JSON probe and
+`GET /__version` with the game's round-4 identity card, logs every
+request, and honours `--port <n>` / `PORT=<n>`. The game starts
 on its title screen; press Enter (or click) to play.
 
 ## Controls
@@ -69,8 +101,9 @@ on its title screen; press Enter (or click) to play.
 | Shift | Sprint (on foot, drains stamina) |
 | E | Enter / exit a car, take a job at a contact |
 | H | Horn (startles nearby pedestrians) |
+| R | Radio: cycle off → synthwave → chill *(new in round 4)* |
 | Enter | Start, confirm (busted / downed / mission complete) |
-| P or Esc | Pause |
+| P or Esc | Pause menu — freezes the game, shows your progress summary *(round 4)* |
 | M | Sound on / off |
 
 ## The jobs
@@ -82,9 +115,12 @@ on its title screen; press Enter (or click) to play.
 | The Convertible Job | Marlo, The Docks | $400 | Steal the red convertible mid-town, bring it to the docks garage. Stealing it is worth 2 stars by itself. |
 | Sunset Taxi Run | Lia, Beach Kiosk | $350 | Pick up a passenger on the beachfront, drop them at St. Azura General. *(new in round 3)* |
 
-Plus the informal economy: 12 cash stashes at $25 each, and score for
-fast, close driving. Getting busted costs 15% of your cash; waking up
-at St. Azura General costs $50.
+Plus the informal economy: 12 cash stashes at $25 each, score for
+fast, close driving — and, new in round 4, **Paket Pantai**: timed
+beach-parcel deliveries between random pickup and drop-off points,
+$120 a run, repeatable forever and independent of the four jobs above.
+Getting busted costs 15% of your cash; waking up at St. Azura General
+costs $50.
 
 ## Under the hood
 
@@ -93,20 +129,27 @@ single seeded mulberry32 stream, which is what makes the screenshot
 scenes byte-for-byte reproducible. The day-night look is computed, not
 baked — sun elevation is `-cos(timeOfDay · 2π)`, and darkness, window
 glow, streetlights and headlights all derive from it. Audio is
-synthesised with WebAudio oscillators (engine, sirens, horn, jingles);
-there are no sound files. Rendering culls against the camera viewport
-before drawing, and the wanted system, bust meter and mission state
-machine are plain data the HUD reads each frame.
+synthesised with WebAudio oscillators (engine, sirens, horn, jingles —
+and, since round 4, two radio stations that are nothing but note
+patterns on a beat clock); there are no sound files. Rendering culls
+against the camera viewport before drawing, and the wanted system,
+bust meter, mission state machine and the Paket Pantai parcel state
+are plain data the HUD reads each frame. The best score is the game's
+only persistent state: one `localStorage` key, read defensively at
+boot so blocked storage can never break the game.
 
 ## Hand-in
 
 `node main.ts` with `MAKEFUN_OUTPUT_DIR` set assembles the bounty hand-in —
 `dossier.json` (built by `vendor/makefun-game.ts` from `game/` and
 `screenshots/`), the three renders named in `shots.json`, and a
-`manifest.json` indexing them. The round-3 generator also verifies the
-page still carries the round-3 feature set (day-night cycle, the taxi
-mission, the beach kiosk, the coins, the engine sound, the shot-mode
-hook) and counts the missions defined in the page, recording both in
+`manifest.json` indexing them. The round-4 generator also verifies the
+page still carries the full feature set — the round-3 base (day-night
+cycle, the taxi mission, the beach kiosk, the coins, the engine sound,
+the shot-mode hook) plus the round-4 markers (pause menu, the
+localStorage best-score key, Paket Pantai, the radio channels, the
+unseen-heat timer) — counts the missions defined in the page, and
+records both the checklist and a dedicated `round4Features` list in
 the manifest. The renders are deterministic:
 `game/index.html?shot=start|play|end&seed=1` replays a seeded, fixed-step
 scene and flags `window.__shotReady` when it is fully drawn. Round 3's
