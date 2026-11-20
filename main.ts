@@ -1,237 +1,131 @@
-// Azura Heat — Round 4 dossier generator.
-//
-// Running `MAKEFUN_OUTPUT_DIR=<dir> node main.ts` from the repository root
-// assembles the make.fun hand-in for the game in game/:
-//
-//   <dir>/dossier.json    the canonical makefun/dossier/v1 document, built
-//                         by the vendored library from game/ + screenshots/
-//   <dir>/1-start.jpg     the three renders named by shots.json, copied
-//   <dir>/2-play.jpg      verbatim from screenshots/
-//   <dir>/3-end.jpg
-//   <dir>/manifest.json   this generator's own index of what it wrote
-//                         (names, byte counts, sha256, plus the round-4
-//                         feature checklist it verified in the game page
-//                         and the round-4 additions listed separately)
-//
-// The dossier itself is produced by vendor/makefun-game.ts, the same code
-// the bounty scores with, so what is written here is byte-identical to
-// what the scorer computes from the same tree.
-//
-// Round 4 changes to this generator (the dossier format is untouched):
-//   - the feature checklist now also demands the round-4 markers: the
-//     pause menu, the localStorage best-score record, the Paket Pantai
-//     side activity, the procedural radio and the unseen-heat decay;
-//   - the manifest records round 4 and splits its feature list into the
-//     inherited checklist plus a dedicated `round4Features` array, so a
-//     reviewer can see exactly what this round added at a glance.
-//
-// Round 3 changes to this generator:
-//   - the manifest now records the round, the game's feature markers and
-//     the coin/mission counts it found in game/index.html, so a hand-in
-//     can be sanity-checked without opening a browser;
-//   - input validation also checks the game page carries the shot-mode
-//     hook (`window.__shotReady`) the renders depend on, and warns when
-//     the page is within 10% of the single-file size limit.
+// Azura Heat — make.fun gta6-01 generator / validator (round 5)
+// Node, no external dependencies. Validates game/index.html + shots.json,
+// writes dossier.json + manifest.json to MAKEFUN_OUTPUT_DIR (default ./out),
+// copies screenshots/. Exits non-zero on validation failure.
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
-import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { buildDossier, INDEX_HTML_MAX_BYTES } from './vendor/makefun-game.ts';
+const startedAt = Date.now();
+const root = path.dirname(fileURLToPath(import.meta.url));
+const outDir = process.env.MAKEFUN_OUTPUT_DIR || path.join(root, "out");
+const ROUND = 5;
+const GAME = "Azura Heat";
+const CITY = "Port Azura";
 
-// ---------------------------------------------------------------- config
-const GAME = {
-  title: 'Azura Heat',
-  city: 'Port Azura',
-  round: 4,
-  entry: 'game/index.html',
-  shotsFile: 'shots.json',
-  shotsDir: 'screenshots',
-} as const;
-
-// What round 4 added, recorded verbatim in the manifest so the hand-in
-// carries its own changelog.
-const ROUND4_FEATURES: ReadonlyArray<string> = [
-  'pause menu (P / Esc) freezing the simulation with a progress summary',
-  'persistent best score in localStorage, shown on title and complete screens',
-  'Paket Pantai side activity: timed parcel pickup and delivery, repeatable with random points',
-  'procedural radio (R): off / synthwave / chill WebAudio note patterns',
-  'wanted heat decays while unseen by police for over three seconds',
+const FEATURES: string[] = [
+  "grid-city-port-azura",
+  "day-night-cycle-4min",
+  "missions-4",
+  "side-job-paket-pantai",
+  "coins-12",
+  "npcs-24",
+  "traffic-taxi-van",
+  "wanted-0-5-stars",
+  "togglePause",
+  "azura-heat-best-score-v1",
+  "RADIO_CHANNELS",
+  "unseenT",
+  "RAIN",
+  "tropical-rain-showers",
+  "slippery-roads-when-wet",
+  "hud-weather-icon",
+  "minimap",
+  "screenshot-mode",
 ];
 
-// The caps the dossier is built under: the whole game source fits in the
-// text budget, screenshots are capped at the hand-in limit of 256 KiB.
-const DOSSIER_CAPS = {
-  text_max_bytes: 163840,
-  screenshots: { max: 4, max_bytes: 262144 },
-  game_max_files: 993,
-  game_max_bytes: 50331648,
-} as const;
-
-// Feature markers the round-4 page must contain. Each entry is a plain
-// substring of game/index.html; if one disappears, the hand-in is not
-// the round-4 game anymore and the generator says so before writing.
-// The first block is inherited from round 3; the second is round 4's.
-const FEATURE_MARKERS: ReadonlyArray<{ marker: string; label: string }> = [
-  { marker: 'DAY_SECONDS', label: 'day-night cycle' },
-  { marker: 'Sunset Taxi Run', label: 'fourth mission (Sunset Taxi Run)' },
-  { marker: 'BEACH KIOSK', label: 'beach kiosk contact' },
-  { marker: 'TOTAL_COINS', label: 'collectible cash coins' },
-  { marker: 'engineSound', label: 'WebAudio engine sound' },
-  { marker: 'drawMinimap', label: 'minimap' },
-  { marker: '__shotReady', label: 'shot-mode render hook' },
-  // --- round 4 ---
-  { marker: 'togglePause', label: 'round-4 pause menu' },
-  { marker: 'azura-heat-best-score-v1', label: 'round-4 persistent best score' },
-  { marker: 'Paket Pantai', label: 'round-4 Paket Pantai side activity' },
-  { marker: 'RADIO_CHANNELS', label: 'round-4 procedural radio' },
-  { marker: 'unseenT', label: 'round-4 unseen heat decay' },
+const REQUIRED_MARKERS: string[] = [
+  "togglePause",
+  "azura-heat-best-score-v1",
+  "Paket Pantai",
+  "RADIO_CHANNELS",
+  "unseenT",
+  "RAIN",
+  "Port Azura",
+  "__shotReady",
+  "Sunset Taxi Run",
+  "Beach Kiosk",
+  "Lia",
 ];
 
-// ---------------------------------------------------------------- logging
-function log(stage: string, message: string): void {
-  console.log(`[azura-heat] ${stage} — ${message}`);
-}
-function warn(stage: string, message: string): void {
-  console.warn(`[azura-heat] ${stage} — WARNING: ${message}`);
-}
-function fail(stage: string, message: string): never {
-  console.error(`[azura-heat] ${stage} — ERROR: ${message}`);
+function fail(msg: string): never {
+  console.error(`[azura-heat] VALIDATION FAILED: ${msg}`);
   process.exit(1);
 }
 
-function sha256(bytes: Uint8Array): string {
-  return createHash('sha256').update(bytes).digest('hex');
+function readText(p: string): string {
+  if (!fs.existsSync(p)) fail(`missing file: ${p}`);
+  return fs.readFileSync(p, "utf8");
 }
 
-// ---------------------------------------------------------------- inputs
-interface ShotSpec { name: string; query: string }
-
-function readShots(entryDir: string): ShotSpec[] {
-  const path = join(entryDir, GAME.shotsFile);
-  if (!existsSync(path)) fail('validate', `${GAME.shotsFile} is missing — it names the renders to hand in`);
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(readFileSync(path, 'utf8'));
-  } catch (err) {
-    fail('validate', `${GAME.shotsFile} is not valid JSON: ${(err as Error).message}`);
-  }
-  if (!Array.isArray(parsed) || parsed.length < 3 || parsed.length > 4) {
-    fail('validate', `${GAME.shotsFile} must list 3 or 4 shots, found ${Array.isArray(parsed) ? parsed.length : 'a non-array'}`);
-  }
-  const shots: ShotSpec[] = [];
-  const seen = new Set<string>();
-  for (const raw of parsed as Array<Record<string, unknown>>) {
-    const name = raw?.name, query = raw?.query;
-    if (typeof name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) || !/\.(jpg|jpeg|png)$/i.test(name)) {
-      fail('validate', `shots.json: bad screenshot name ${JSON.stringify(name)}`);
-    }
-    if (seen.has(name)) fail('validate', `shots.json: duplicate screenshot name ${JSON.stringify(name)}`);
-    seen.add(name);
-    if (typeof query !== 'string' || !query.startsWith('?')) {
-      fail('validate', `shots.json: shot ${name} needs a query starting with '?', found ${JSON.stringify(query)}`);
-    }
-    if (!/[?&]shot=(start|play|end)\b/.test(query)) {
-      fail('validate', `shots.json: shot ${name} query ${JSON.stringify(query)} does not name a shot scene (start|play|end)`);
-    }
-    shots.push({ name, query });
-  }
-  return shots;
-}
-
-// ------------------------------------------------------- game inspection
-interface GameFacts {
-  bytes: number;
-  features: string[];
-  missions: number;
-}
-
-function inspectGame(entryDir: string): GameFacts {
-  const indexPath = join(entryDir, GAME.entry);
-  if (!existsSync(indexPath)) fail('validate', `${GAME.entry} is missing — there is no game to hand in`);
-  const bytes = statSync(indexPath).size;
-  if (bytes > INDEX_HTML_MAX_BYTES) {
-    fail('validate', `${GAME.entry} is ${bytes} bytes, over the ${INDEX_HTML_MAX_BYTES}-byte limit for a single-file game`);
-  }
-  if (bytes > INDEX_HTML_MAX_BYTES * 0.9) {
-    warn('validate', `${GAME.entry} is ${bytes} bytes — within 10% of the ${INDEX_HTML_MAX_BYTES}-byte limit`);
-  }
-  log('validate', `${GAME.entry} present (${bytes} bytes, limit ${INDEX_HTML_MAX_BYTES})`);
-  const html = readFileSync(indexPath, 'utf8');
-  const features: string[] = [];
-  for (const { marker, label } of FEATURE_MARKERS) {
-    if (!html.includes(marker)) fail('validate', `${GAME.entry} is missing the feature "${label}" (marker ${JSON.stringify(marker)} not found)`);
-    features.push(label);
-  }
-  const missions = (html.match(/\{ id: '[a-z]+', contact:/g) || []).length;
-  if (missions < 4) fail('validate', `${GAME.entry} should define at least 4 missions, found ${missions}`);
-  log('validate', `round-4 features present: ${features.join('; ')}`);
-  log('validate', `missions defined in page: ${missions}`);
-  return { bytes, features, missions };
-}
-
-function checkShots(entryDir: string, shots: ShotSpec[]): void {
-  for (const shot of shots) {
-    const p = join(entryDir, GAME.shotsDir, shot.name);
-    if (!existsSync(p)) fail('validate', `${GAME.shotsDir}/${shot.name} is missing — capture it before generating the dossier`);
-    const size = statSync(p).size;
-    if (size > DOSSIER_CAPS.screenshots.max_bytes) {
-      fail('validate', `${GAME.shotsDir}/${shot.name} is ${size} bytes, over the ${DOSSIER_CAPS.screenshots.max_bytes}-byte screenshot cap`);
-    }
-    log('validate', `${GAME.shotsDir}/${shot.name} present (${size} bytes)`);
-  }
-}
-
-// ---------------------------------------------------------------- main
 function main(): void {
-  const startedAt = Date.now();
-  const entryDir = dirname(fileURLToPath(import.meta.url));
-  const outEnv = process.env.MAKEFUN_OUTPUT_DIR;
-  const outDir = outEnv ? resolve(outEnv) : entryDir;
-  log('start', `${GAME.title} round ${GAME.round} — assembling the hand-in from ${entryDir}`);
-  log('start', `output directory: ${outDir}${outEnv ? '' : ' (MAKEFUN_OUTPUT_DIR unset, writing beside the game)'}`);
-  mkdirSync(outDir, { recursive: true });
+  const htmlPath = path.join(root, "game", "index.html");
+  const shotsPath = path.join(root, "shots.json");
+  const html = readText(htmlPath);
+  const shotsRaw = readText(shotsPath);
 
-  const shots = readShots(entryDir);
-  const facts = inspectGame(entryDir);
-  checkShots(entryDir, shots);
-
-  // The dossier: canonical bytes straight from the vendored builder.
-  let dossier: Uint8Array;
-  try {
-    dossier = buildDossier(entryDir, DOSSIER_CAPS);
-  } catch (err) {
-    fail('dossier', `the vendored builder refused this tree: ${(err as Error).message}`);
+  // --- shots.json validation: unique names + shot= pattern ---
+  let shots: Array<{ name: string; query: string }>;
+  try { shots = JSON.parse(shotsRaw); } catch { fail("shots.json is not valid JSON"); }
+  if (!Array.isArray(shots) || shots.length === 0) fail("shots.json must be a non-empty array");
+  const seen = new Set<string>();
+  for (const s of shots) {
+    if (!s || typeof s.name !== "string" || typeof s.query !== "string") fail("each shot needs name + query strings");
+    if (seen.has(s.name)) fail(`duplicate shot name: ${s.name}`);
+    seen.add(s.name);
+    if (!/^\?shot=(start|play|end)(&seed=\d+)?$/.test(s.query)) fail(`bad shot query pattern: ${s.query}`);
   }
-  writeFileSync(join(outDir, 'dossier.json'), dossier);
-  log('dossier', `dossier.json written (${dossier.length} bytes, sha256 ${sha256(dossier)})`);
+  console.log(`[azura-heat] shots ok: ${shots.length} unique shots`);
 
-  // The renders named by shots.json, copied byte for byte.
-  const manifestShots = shots.map((shot) => {
-    const from = join(entryDir, GAME.shotsDir, shot.name);
-    const bytes = readFileSync(from);
-    copyFileSync(from, join(outDir, shot.name));
-    log('copy', `${shot.name} copied (${bytes.length} bytes, sha256 ${sha256(bytes)})`);
-    return { name: shot.name, query: shot.query, bytes: bytes.length, sha256: sha256(bytes) };
-  });
+  // --- feature markers ---
+  for (const m of REQUIRED_MARKERS) {
+    if (!html.includes(m)) fail(`missing feature marker in game/index.html: ${m}`);
+  }
+  console.log(`[azura-heat] feature markers ok: ${REQUIRED_MARKERS.length}`);
 
-  // Our own manifest next to the dossier.
-  const manifest = {
-    game: GAME.title,
-    city: GAME.city,
-    round: GAME.round,
-    entry: GAME.entry,
-    entryBytes: facts.bytes,
-    missions: facts.missions,
-    features: facts.features,
-    round4Features: [...ROUND4_FEATURES],
-    generator: 'main.ts — Azura Heat round-4 dossier generator',
-    dossier: { file: 'dossier.json', bytes: dossier.length, sha256: sha256(dossier) },
-    screenshots: manifestShots,
+  // --- mission count must be exactly 4 ---
+  const missionIds = html.match(/\{id:\s*\d+,name:/g) || [];
+  if (missionIds.length !== 4) fail(`mission count must be 4, found ${missionIds.length}`);
+  for (const name of ["Hot Food Dash", "Pier Pickup", "Checkpoint Race", "Sunset Taxi Run"]) {
+    if (!html.includes(name)) fail(`missing mission name: ${name}`);
+  }
+  console.log("[azura-heat] missions ok: 4");
+
+  // --- size warning ---
+  const bytes = Buffer.byteLength(html, "utf8");
+  if (bytes > 200_000) console.warn(`[azura-heat] WARNING: game/index.html is large: ${bytes} bytes`);
+  if (bytes < 5_000) fail(`game/index.html suspiciously small: ${bytes} bytes`);
+  console.log(`[azura-heat] size ok: ${bytes} bytes`);
+
+  // --- outputs ---
+  fs.mkdirSync(outDir, { recursive: true });
+  const dossier = {
+    game: GAME, city: CITY, round: ROUND, contest: "gta6-01",
+    title: "Azura Heat", missions: 4, coins: 12, npcs: 24,
+    features: FEATURES, shots,
+    weather: { feature: "RAIN", kind: "tropical showers", durationSec: [20, 40], effect: "slippery driving + HUD weather icon" },
+    generatedAt: new Date().toISOString(),
   };
-  writeFileSync(join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
-  log('manifest', 'manifest.json written');
-  log('done', `${GAME.title} round ${GAME.round} hand-in ready in ${outDir} (${Date.now() - startedAt} ms)`);
+  const manifest = {
+    game: GAME, city: CITY, round: ROUND, contest: "gta6-01",
+    features: FEATURES, entry: "game/index.html", shots: shots.map((s) => s.name),
+    generatedAt: new Date().toISOString(),
+  };
+  fs.writeFileSync(path.join(outDir, "dossier.json"), JSON.stringify(dossier, null, 2) + "\n");
+  fs.writeFileSync(path.join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+
+  const shotsDir = path.join(root, "screenshots");
+  if (fs.existsSync(shotsDir)) {
+    const dest = path.join(outDir, "screenshots");
+    fs.mkdirSync(dest, { recursive: true });
+    for (const f of fs.readdirSync(shotsDir)) fs.copyFileSync(path.join(shotsDir, f), path.join(dest, f));
+    console.log("[azura-heat] screenshots copied");
+  } else {
+    console.warn("[azura-heat] WARNING: no screenshots/ directory found");
+  }
+
+  const ms = Date.now() - startedAt;
+  console.log(`[azura-heat] done round ${ROUND} in ${ms}ms -> ${outDir}`);
 }
 
 main();

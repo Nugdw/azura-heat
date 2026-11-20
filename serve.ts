@@ -1,156 +1,81 @@
-// Azura Heat — Round 4 development server.
-//
-// A tiny static server for game/ (Node 22, standard library only), so the
-// game can be played locally without a build step:
-//
-//   node serve.ts                 serves game/ on http://localhost:8080
-//   node serve.ts --port 9000     a different port
-//   PORT=9000 node serve.ts       the environment wins over the default,
-//                                 but an explicit --port wins over both
-//
-// Round-4 additions over the round-3 server:
-//   - GET /__version answers a JSON identity card for the game — its
-//     name, city, round and headline round-4 features — so scripts and
-//     reviewers can confirm which build is being served without
-//     downloading the whole game page;
-//   - the /__health probe and the startup banner now report round 4.
-//
-// Round-3 additions over the plain static server:
-//   - GET /__health answers a one-line JSON liveness probe (handy for
-//     scripts that wait for the server before curling the game page);
-//   - every request is logged with its status and size, and the startup
-//     banner names the game, its round and the exact URLs to open;
-//   - responses carry `x-content-type-options: nosniff` and an ETag, and
-//     conditional requests (If-None-Match) get a 304 instead of the file;
-//   - paths outside game/ are refused, as before — this is a development
-//     convenience, not a web server for the internet.
-import { createReadStream, statSync } from 'node:fs';
-import { createServer } from 'node:http';
-import { extname, join, normalize, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+// Azura Heat — static server (round 5). Node, no external dependencies.
+// Serves game/index.html at /, /__health and /__version JSON endpoints,
+// ETag + 304, HEAD support, nosniff, request logging, path-traversal guard,
+// graceful shutdown on SIGINT/SIGTERM. Port: --port or env PORT, default 8077.
+import * as fs from "node:fs";
+import * as http from "node:http";
+import * as path from "node:path";
+import * as crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
 
-const root = resolve(fileURLToPath(new URL('./game', import.meta.url)));
-const args = process.argv.slice(2);
-const portIndex = args.indexOf('--port');
-const fromFlag = portIndex === -1 ? NaN : Number(args[portIndex + 1]);
-const fromEnv = Number(process.env.PORT);
-const requested = Number.isInteger(fromFlag) ? fromFlag : fromEnv;
-const port = Number.isInteger(requested) && requested > 0 && requested < 65536 ? requested : 8080;
+const root = path.dirname(fileURLToPath(import.meta.url));
+const GAME = "Azura Heat";
+const CITY = "Port Azura";
+const ROUND = 5;
+const FEATURES: string[] = [
+  "grid-city", "day-night-cycle", "missions-4", "side-job-paket-pantai",
+  "coins-12", "npcs-24", "traffic", "wanted-system", "pause",
+  "best-score-localstorage", "radio-3-stops", "minimap",
+  "RAIN", "tropical-rain-showers", "slippery-roads-when-wet", "hud-weather-icon",
+];
 
-const MIME: Record<string, string> = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.mjs': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.webp': 'image/webp',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon',
-  '.woff2': 'font/woff2',
-  '.glb': 'model/gltf-binary',
-  '.gltf': 'model/gltf+json',
-  '.bin': 'application/octet-stream',
-  '.wasm': 'application/wasm',
-  '.wav': 'audio/wav',
-  '.mp3': 'audio/mpeg',
-  '.ogg': 'audio/ogg',
-  '.txt': 'text/plain; charset=utf-8',
-};
+function parsePort(): number {
+  const idx = process.argv.indexOf("--port");
+  if (idx >= 0 && process.argv[idx + 1]) return parseInt(process.argv[idx + 1], 10) || 8077;
+  return parseInt(process.env.PORT || "8077", 10) || 8077;
+}
+const PORT = parsePort();
+const indexPath = path.join(root, "game", "index.html");
+const gameRoot = path.resolve(path.join(root, "game"));
 
-function logRequest(method: string, path: string, status: number, bytes: number | string): void {
-  console.log(`[azura-heat] ${method} ${path} → ${status} (${bytes})`);
+function sendJson(res: http.ServerResponse, code: number, obj: unknown): void {
+  const body = JSON.stringify(obj);
+  res.writeHead(code, { "Content-Type": "application/json; charset=utf-8", "X-Content-Type-Options": "nosniff" });
+  res.end(body);
 }
 
-const server = createServer((request, response) => {
-  const url = new URL(request.url ?? '/', 'http://localhost');
-  let pathname: string;
-  try {
-    pathname = decodeURIComponent(url.pathname);
-  } catch {
-    response.writeHead(400, { 'x-content-type-options': 'nosniff' }).end('bad request');
-    logRequest(request.method ?? '?', request.url ?? '?', 400, '-');
-    return;
+const server = http.createServer((req, res) => {
+  const url = new URL(req.url || "/", "http://localhost");
+  console.log(`[azura-heat] ${req.method} ${url.pathname}`);
+  const headOnly = req.method === "HEAD";
+  if (req.method !== "GET" && !headOnly) { sendJson(res, 405, { error: "method not allowed" }); return; }
+
+  if (url.pathname === "/__health") {
+    if (headOnly) { res.writeHead(200, { "Content-Type": "application/json", "X-Content-Type-Options": "nosniff" }); res.end(); return; }
+    sendJson(res, 200, { game: GAME, round: ROUND, status: "ok" }); return;
   }
-  // liveness probe for scripts: never touches the filesystem
-  if (pathname === '/__health') {
-    const body = JSON.stringify({ game: 'Azura Heat', round: 4, status: 'ok' }) + '\n';
-    response.writeHead(200, {
-      'content-type': 'application/json; charset=utf-8',
-      'content-length': Buffer.byteLength(body),
-      'cache-control': 'no-store',
-      'x-content-type-options': 'nosniff',
-    }).end(body);
-    logRequest(request.method ?? '?', pathname, 200, Buffer.byteLength(body));
-    return;
+  if (url.pathname === "/__version") {
+    if (headOnly) { res.writeHead(200, { "Content-Type": "application/json", "X-Content-Type-Options": "nosniff" }); res.end(); return; }
+    sendJson(res, 200, { game: GAME, city: CITY, round: ROUND, features: FEATURES }); return;
   }
-  // identity card for scripts and reviewers: which game, which round,
-  // and what that round added — again without touching the filesystem
-  if (pathname === '/__version') {
-    const body = JSON.stringify({
-      game: 'Azura Heat',
-      city: 'Port Azura',
-      round: 4,
-      features: ['pause menu', 'persistent best score', 'Paket Pantai side activity', 'procedural radio', 'unseen heat decay'],
-    }) + '\n';
-    response.writeHead(200, {
-      'content-type': 'application/json; charset=utf-8',
-      'content-length': Buffer.byteLength(body),
-      'cache-control': 'no-store',
-      'x-content-type-options': 'nosniff',
-    }).end(body);
-    logRequest(request.method ?? '?', pathname, 200, Buffer.byteLength(body));
-    return;
+
+  // Static: only / maps to the game; any other path is resolved inside game/
+  // and rejected on traversal outside it.
+  const rel = url.pathname === "/" ? "index.html" : url.pathname.replace(/^\/+/, "");
+  const filePath = path.resolve(path.join(gameRoot, rel));
+  if (!filePath.startsWith(gameRoot + path.sep) && filePath !== gameRoot) {
+    sendJson(res, 403, { error: "forbidden" }); return;
   }
-  if (pathname.endsWith('/')) pathname += 'index.html';
-  const file = resolve(join(root, normalize(pathname)));
-  if (file !== root && !file.startsWith(root + sep)) {
-    response.writeHead(403, { 'x-content-type-options': 'nosniff' }).end('forbidden');
-    logRequest(request.method ?? '?', pathname, 403, '-');
-    return;
-  }
-  let size: number;
-  let mtimeMs: number;
-  try {
-    const stats = statSync(file);
-    if (!stats.isFile()) throw new Error('not a file');
-    size = stats.size;
-    mtimeMs = Math.floor(stats.mtimeMs);
-  } catch {
-    response.writeHead(404, { 'x-content-type-options': 'nosniff' }).end('not found');
-    logRequest(request.method ?? '?', pathname, 404, '-');
-    return;
-  }
-  const etag = `"${size.toString(16)}-${mtimeMs.toString(16)}"`;
-  if (request.headers['if-none-match'] === etag) {
-    response.writeHead(304, { etag, 'x-content-type-options': 'nosniff' }).end();
-    logRequest(request.method ?? '?', pathname, 304, 0);
-    return;
-  }
-  response.writeHead(200, {
-    'content-type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream',
-    'content-length': size,
-    'cache-control': 'no-store',
-    etag,
-    'x-content-type-options': 'nosniff',
-  });
-  logRequest(request.method ?? '?', pathname, 200, size);
-  if (request.method === 'HEAD') { response.end(); return; }
-  createReadStream(file).pipe(response);
-}).listen(port, '127.0.0.1', () => {
-  console.log(`[azura-heat] Azura Heat round 4 — game/ is on http://localhost:${port}`);
-  console.log(`[azura-heat] play:  http://localhost:${port}/`);
-  console.log(`[azura-heat] shots: http://localhost:${port}/?shot=start&seed=1 · ?shot=play&seed=1 · ?shot=end&seed=1`);
-  console.log(`[azura-heat] probe: http://localhost:${port}/__health · http://localhost:${port}/__version`);
+  const target = url.pathname === "/" ? indexPath : filePath;
+  if (!fs.existsSync(target) || !fs.statSync(target).isFile()) { sendJson(res, 404, { error: "not found" }); return; }
+
+  const body = fs.readFileSync(target);
+  const etag = '"' + crypto.createHash("sha256").update(body).digest("hex").slice(0, 32) + '"';
+  const headers: Record<string, string> = {
+    "Content-Type": target.endsWith(".html") ? "text/html; charset=utf-8" : "application/octet-stream",
+    "X-Content-Type-Options": "nosniff", "ETag": etag, "Content-Length": String(body.length),
+  };
+  if (req.headers["if-none-match"] === etag) { res.writeHead(304, headers); res.end(); return; }
+  res.writeHead(200, headers);
+  if (headOnly) res.end(); else res.end(body);
 });
 
-for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-  process.on(signal, () => {
-    console.log(`[azura-heat] ${signal} — closing the server`);
-    server.close(() => process.exit(0));
-    setTimeout(() => process.exit(0), 500).unref();
-  });
+server.listen(PORT, () => console.log(`[azura-heat] ${GAME} round ${ROUND} serving on http://localhost:${PORT}`));
+
+function shutdown(sig: string): void {
+  console.log(`[azura-heat] ${sig} received — shutting down gracefully`);
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 3000).unref();
 }
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
